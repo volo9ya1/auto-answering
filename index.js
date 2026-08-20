@@ -9,8 +9,8 @@ const bot = new Bot(process.env.BOT_TOKEN);
 // Хранилище: ID чата -> время последнего твоего сообщения
 const lastActivity = new Map();
 
-// Время молчания в миллисекундах (10 минут)
-const SILENCE_DURATION = 10 * 60 * 1000;
+// Время молчания в миллисекундах (5 минут)
+const SILENCE_DURATION = 5 * 60 * 1000;
 
 bot.on("business_message", async (ctx) => {
   const msg = ctx.businessMessage;
