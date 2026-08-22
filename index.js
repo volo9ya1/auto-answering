@@ -1,34 +1,38 @@
 const { Bot } = require("grammy");
 const http = require("http");
 
-// Веб-сервер для поддержки активности на Render
+// Веб-сервер для поддержания активности на Render
 http.createServer((req, res) => res.end("Bot is live!")).listen(process.env.PORT || 3000);
 
 const bot = new Bot(process.env.BOT_TOKEN);
 
-// Настройки геопозиции (По умолчанию: Ташкент)
+// Настройки геопозиции (Ташкент)
 const MY_LATITUDE = 41.2995;
 const MY_LONGITUDE = 69.2401;
 
-// Введите ваш личный Telegram ID для получения отчётов (или добавьте OWNER_ID в Render Environment Variables)
-const OWNER_ID = Number(process.env.OWNER_ID) || 7087685751; 
+// ID владельца для отчётов (замените 0 на ваш ID или задайте OWNER_ID в Render)
+const OWNER_ID = Number(process.env.OWNER_ID) || 0; 
 
-// Память бота
 const lastActivity = new Map(); 
 const stats = { total: 0, users: new Set() };
 
-const SILENCE_DURATION = 5 * 60 * 1000; // Пауза 5 минут (защита от флуда)
-const AUTO_DELETE_TIME = 2.5 * 60 * 1000; // Удаление автоответа через 2.5 минуты
+const SILENCE_DURATION = 10 * 60 * 1000; // Пауза 10 минут
+const AUTO_DELETE_TIME = 2.5 * 60 * 1000; // Авто-удаление через 2.5 минуты
 
 bot.catch((err) => console.error("Ошибка бота (перехвачена):", err.message));
 
-// Время Ташкента (UTC+5)
+// Команда /start в личных сообщениях с ботом
+bot.command("start", async (ctx) => {
+  await ctx.reply(`Привет! Я твой личный ассистент. Воскресные отчёты будут приходить в этот чат.\n\nТвой Telegram ID: \`${ctx.from.id}\``, { parse_mode: "Markdown" });
+});
+
+// Определение часа по времени Ташкента (UTC+5)
 function getUzbekistanHour() {
   const options = { timeZone: "Asia/Tashkent", hour: "2-digit", hour12: false };
   return parseInt(new Intl.DateTimeFormat("ru-RU", options).format(new Date()), 10);
 }
 
-// Определение языка (Узбекский / Английский / Русский)
+// Определение языка входящего сообщения
 function detectLanguage(text = "") {
   const lower = text.toLowerCase();
   if (/[o‘g‘qh]|salom|qayerdasiz|qayerdasan/i.test(lower)) return "uz";
@@ -42,17 +46,17 @@ bot.on("business_message", async (ctx) => {
   const text = msg.text || msg.caption || "";
   const lowerText = text.toLowerCase().trim();
 
-  // 1. Проверка исходящего сообщения (написали вы)
+  // 1. Игнорируем исходящие сообщения (отправленные вами)
   const isMyMessage = msg.from && msg.from.id !== msg.chat.id;
   if (isMyMessage) {
     lastActivity.set(chatId, Date.now());
     return;
   }
 
-  // 2. Игнорирование пересланного контента
+  // 2. Игнорируем пересланные сообщения
   if (msg.forward_date || msg.forward_origin) return;
 
-  // 3. Защита от флуда и таймаут 10 минут
+  // 3. Защита от флуда и проверка 10-минутной паузы
   const lastTime = lastActivity.get(chatId);
   if (lastTime && (Date.now() - lastTime < SILENCE_DURATION)) return;
   lastActivity.set(chatId, Date.now());
@@ -61,49 +65,47 @@ bot.on("business_message", async (ctx) => {
   stats.total++;
   stats.users.add(chatId);
 
-  const firstName = msg.from?.first_name || "друг";
+  const firstName = msg.from?.first_name || "Пользователь";
   const lang = detectLanguage(text);
   let replyText = "";
   let sendGeo = false;
 
-  // 4. Защита от голосовых и видеосообщений
-  if (msg.voice || msg.video_note || msg.video) {
-    if (lang === "uz") replyText = `${firstName}, hozir ovozli/videoni eshita olmayman. Matn ko'rinishida yozing!`;
-    else if (lang === "en") replyText = `${firstName}, I can't listen to voice/video right now. Please text me!`;
-    else replyText = `${firstName}, сейчас не могу прослушать аудио/видео. Напиши, пожалуйста, текстом!`;
-  } 
-  // 5. Запрос геопозиции
-  else if (["где ты", "где вы", "qayerdasiz", "qayerdasan"].some(q => lowerText.includes(q))) {
+  // 4. Триггер: Геопозиция
+  if (lowerText.includes("где ты") || lowerText.includes("где вы") || lowerText.includes("qayerdasan") || lowerText.includes("qayerdasiz")) {
     sendGeo = true;
-    if (lang === "uz") replyText = `${firstName}, men shu yerdaman:`;
-    else if (lang === "en") replyText = `${firstName}, here is my location:`;
-    else replyText = `${firstName}, вот моя локация:`;
-  }
-  // 6. Триггер на "Срочно" / "Важно" в начале фразы
-  else if (/^(срочно|важно|urgent|muhim)/i.test(lowerText)) {
-    if (lang === "uz") replyText = `${firstName}, ko'rdimki bu muhim! Agar shoshilinch bo'lsa, menga qo'ng'iroq qiling.`;
-    else if (lang === "en") replyText = `${firstName}, I see this is urgent! Please call me if it's critical.`;
-    else replyText = `${firstName}, вижу, что это срочно! Если дело горит — лучше наберите меня по телефону.`;
+    replyText = (lang === "uz") ? `${firstName}, men shu yerdaman:` : 
+                (lang === "en") ? `${firstName}, here is my location:` : 
+                                  `${firstName}, вот моя локация:`;
   } 
-  // 7. Смена День / Ночь (Ташкент: 23:00 — 08:00)
+  // 5. Триггер: Срочно / Важно в начале
+  else if (lowerText.startsWith("срочно") || lowerText.startsWith("важно") || lowerText.startsWith("urgent") || lowerText.startsWith("muhim")) {
+    replyText = (lang === "uz") ? `${firstName}, ko'rdimki bu muhim! Agar shoshilinch bo'lsa, menga qo'ng'iroq qiling.` :
+                (lang === "en") ? `${firstName}, I see this is urgent! Please call me if it's critical.` :
+                                  `${firstName}, вижу, что это срочно! Если дело горит — лучше наберите меня по телефону.`;
+  }
+  // 6. Триггер: Голосовые и видеосообщения
+  else if (msg.voice || msg.video_note || msg.video) {
+    replyText = (lang === "uz") ? `${firstName}, hozir ovozli/videoni eshita olmayman. Matn ko'rinishida yozing!` :
+                (lang === "en") ? `${firstName}, I can't listen to voice/video right now. Please text me!` :
+                                  `${firstName}, сейчас не могу прослушать аудио/видео. Напиши, пожалуйста, текстом!`;
+  }
+  // 7. Стандартный ответ (День / Ночь по Ташкенту)
   else {
     const hour = getUzbekistanHour();
     const isNight = hour >= 23 || hour < 8;
 
     if (isNight) {
-      if (lang === "uz") replyText = `${firstName}, men uxlayapman. Ertalab javob beraman!`;
-      else if (lang === "en") replyText = `${firstName}, I'm sleeping right now. Will reply in the morning!`;
-      else replyText = `${firstName}, я уже сплю, звук выключен. Обязательно отвечу утром!`;
+      replyText = (lang === "uz") ? `${firstName}, men uxlayapman. Ertalab javob beraman!` :
+                  (lang === "en") ? `${firstName}, I'm sleeping right now. Will reply in the morning!` :
+                                    `${firstName}, я сейчас сплю. Отвечу утром!`;
     } else {
-      if (lang === "uz") replyText = `${firstName}, salom! Hozir bandman, bo'shashim bilan javob beraman.`;
-      else if (lang === "en") replyText = `${firstName}, hi! I'm busy right now, will get back to you soon.`;
-      else replyText = `${firstName}, привет! Сейчас я не у телефона, освобожусь — сразу отвечу.`;
+      replyText = `Приветствую ${firstName} ! Сейчас я не в сети, когда я зайду в сеть, то обязательно прочту. Если хотите передать что-то срочное, то лучше позвоните мне.`;
     }
   }
 
-  // 8. Имитация человека (Статус "печатает..." на 3 секунды)
+  // 8. Имитация человека (Статус "печатает..." на 2 секунды)
   await ctx.replyWithChatAction("typing");
-  await new Promise((r) => setTimeout(r, 3000));
+  await new Promise((r) => setTimeout(r, 2000));
 
   // 9. Отправка ответа
   let sentMsg;
@@ -126,7 +128,7 @@ bot.on("business_message", async (ctx) => {
   }
 });
 
-// 11. Отчёт по воскресеньям (проверка каждый час)
+// Еженедельный отчёт по воскресеньям в 20:00 (по Ташкенту)
 setInterval(async () => {
   const now = new Date();
   const day = new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Tashkent", weekday: "short" }).format(now);
